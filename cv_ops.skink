@@ -1,0 +1,183 @@
+// File:    cv_ops.skink
+// Purpose: Geometry and color ops for skink-cv — grayscale conversion,
+//          crop, nearest/bilinear resize, flips, 90° rotations, and
+//          constant-padding.
+module cv_ops
+
+import "cv_img"
+
+// Grayscale converts any image to 1 channel (Rec.601 luma).
+pub fn Grayscale(im: *cv_img.Image) -> cv_img.Image {
+    if im.Channels == 1 {
+        return cv_img.Clone(im)
+    }
+    out := cv_img.New(im.W, im.H, 1)
+    for i := 0; i < im.W * im.H; i = i + 1 {
+        r := im.Pix[i * 3]
+        g := im.Pix[i * 3 + 1]
+        b := im.Pix[i * 3 + 2]
+        out.Pix[i] = 0.299 * r + 0.587 * g + 0.114 * b
+    }
+    return out
+}
+
+// Crop extracts the rect (x,y,w,h), clamped to the image.
+pub fn Crop(im: *cv_img.Image, x: int, y: int, w: int, h: int) -> cv_img.Image {
+    if x < 0 {
+        x = 0
+    }
+    if y < 0 {
+        y = 0
+    }
+    if x + w > im.W {
+        w = im.W - x
+    }
+    if y + h > im.H {
+        h = im.H - y
+    }
+    if w <= 0 || h <= 0 {
+        return cv_img.New(1, 1, im.Channels)
+    }
+    out := cv_img.New(w, h, im.Channels)
+    for yy := 0; yy < h; yy = yy + 1 {
+        for xx := 0; xx < w; xx = xx + 1 {
+            for c := 0; c < im.Channels; c = c + 1 {
+                out.Pix[(yy * w + xx) * im.Channels + c] =
+                    cv_img.Get(im, x + xx, y + yy, c)
+            }
+        }
+    }
+    return out
+}
+
+// ResizeNearest scales to (w,h) by nearest sampling.
+pub fn ResizeNearest(im: *cv_img.Image, w: int, h: int) -> cv_img.Image {
+    out := cv_img.New(w, h, im.Channels)
+    for y := 0; y < h; y = y + 1 {
+        sy := y * im.H / h
+        for x := 0; x < w; x = x + 1 {
+            sx := x * im.W / w
+            for c := 0; c < im.Channels; c = c + 1 {
+                out.Pix[(y * w + x) * im.Channels + c] =
+                    cv_img.Get(im, sx, sy, c)
+            }
+        }
+    }
+    return out
+}
+
+// ResizeBilinear scales to (w,h) by bilinear interpolation.
+pub fn ResizeBilinear(im: *cv_img.Image, w: int, h: int) -> cv_img.Image {
+    out := cv_img.New(w, h, im.Channels)
+    for y := 0; y < h; y = y + 1 {
+        fy := float(y) * float(im.H - 1) / float(h - 1)
+        if h == 1 {
+            fy = 0.0
+        }
+        y0 := int(fy)
+        y1 := y0 + 1
+        if y1 >= im.H {
+            y1 = im.H - 1
+        }
+        wy := fy - float(y0)
+        for x := 0; x < w; x = x + 1 {
+            fx := float(x) * float(im.W - 1) / float(w - 1)
+            if w == 1 {
+                fx = 0.0
+            }
+            x0 := int(fx)
+            x1 := x0 + 1
+            if x1 >= im.W {
+                x1 = im.W - 1
+            }
+            wx := fx - float(x0)
+            for c := 0; c < im.Channels; c = c + 1 {
+                a := cv_img.Get(im, x0, y0, c)
+                b := cv_img.Get(im, x1, y0, c)
+                cc := cv_img.Get(im, x0, y1, c)
+                d := cv_img.Get(im, x1, y1, c)
+                top := a + (b - a) * wx
+                bot := cc + (d - cc) * wx
+                out.Pix[(y * w + x) * im.Channels + c] = top + (bot - top) * wy
+            }
+        }
+    }
+    return out
+}
+
+// FlipH mirrors horizontally.
+pub fn FlipH(im: *cv_img.Image) -> cv_img.Image {
+    out := cv_img.New(im.W, im.H, im.Channels)
+    for y := 0; y < im.H; y = y + 1 {
+        for x := 0; x < im.W; x = x + 1 {
+            for c := 0; c < im.Channels; c = c + 1 {
+                out.Pix[(y * im.W + x) * im.Channels + c] =
+                    im.Pix[(y * im.W + (im.W - 1 - x)) * im.Channels + c]
+            }
+        }
+    }
+    return out
+}
+
+// FlipV mirrors vertically.
+pub fn FlipV(im: *cv_img.Image) -> cv_img.Image {
+    out := cv_img.New(im.W, im.H, im.Channels)
+    for y := 0; y < im.H; y = y + 1 {
+        for x := 0; x < im.W; x = x + 1 {
+            for c := 0; c < im.Channels; c = c + 1 {
+                out.Pix[(y * im.W + x) * im.Channels + c] =
+                    im.Pix[((im.H - 1 - y) * im.W + x) * im.Channels + c]
+            }
+        }
+    }
+    return out
+}
+
+// Rotate90 rotates clockwise; Rotate270 counter-clockwise.
+pub fn Rotate90(im: *cv_img.Image) -> cv_img.Image {
+    out := cv_img.New(im.H, im.W, im.Channels)
+    for y := 0; y < im.H; y = y + 1 {
+        for x := 0; x < im.W; x = x + 1 {
+            nx := im.H - 1 - y
+            ny := x
+            for c := 0; c < im.Channels; c = c + 1 {
+                out.Pix[(ny * out.W + nx) * im.Channels + c] =
+                    im.Pix[(y * im.W + x) * im.Channels + c]
+            }
+        }
+    }
+    return out
+}
+
+// Rotate270 rotates counter-clockwise.
+pub fn Rotate270(im: *cv_img.Image) -> cv_img.Image {
+    out := cv_img.New(im.H, im.W, im.Channels)
+    for y := 0; y < im.H; y = y + 1 {
+        for x := 0; x < im.W; x = x + 1 {
+            nx := y
+            ny := im.W - 1 - x
+            for c := 0; c < im.Channels; c = c + 1 {
+                out.Pix[(ny * out.W + nx) * im.Channels + c] =
+                    im.Pix[(y * im.W + x) * im.Channels + c]
+            }
+        }
+    }
+    return out
+}
+
+// Pad adds a `px`-wide border of `value` around the image.
+pub fn Pad(im: *cv_img.Image, px: int, value: float) -> cv_img.Image {
+    out := cv_img.New(im.W + 2 * px, im.H + 2 * px, im.Channels)
+    for i := 0; i < len(out.Pix); i = i + 1 {
+        out.Pix[i] = value
+    }
+    for y := 0; y < im.H; y = y + 1 {
+        for x := 0; x < im.W; x = x + 1 {
+            for c := 0; c < im.Channels; c = c + 1 {
+                out.Pix[((y + px) * out.W + x + px) * im.Channels + c] =
+                    im.Pix[(y * im.W + x) * im.Channels + c]
+            }
+        }
+    }
+    return out
+}

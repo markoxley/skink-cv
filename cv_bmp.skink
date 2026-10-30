@@ -1,0 +1,126 @@
+// File:    cv_bmp.skink
+// Purpose: BMP codec for skink-cv. Decode handles uncompressed 24- and
+//          32-bit BI_RGB bitmaps (bottom-up and top-down). Encode
+//          writes 24-bit bottom-up BMPs. Alpha is dropped.
+module cv_bmp
+
+import "std/str"
+import "std/errors"
+import "std/libc"
+import "cv_img"
+
+fn le16(b: string, off: int) -> int {
+    return (int(b[off]) & 255) | ((int(b[off + 1]) & 255) << 8)
+}
+
+fn le32(b: string, off: int) -> int {
+    return (int(b[off]) & 255) | ((int(b[off + 1]) & 255) << 8) |
+        ((int(b[off + 2]) & 255) << 16) | ((int(b[off + 3]) & 255) << 24)
+}
+
+// Decode parses a BMP into an RGB Image.
+pub fn Decode(data: string, byteLen: int) -> (cv_img.Image, errors.Error) {
+    var empty cv_img.Image
+    if byteLen < 54 {
+        return empty, errors.New("bmp: too short")
+    }
+    if (int(data[0]) & 255) != 66 || (int(data[1]) & 255) != 77 {
+        return empty, errors.New("bmp: not BM")
+    }
+    pixOff := le32(data, 10)
+    dibSize := le32(data, 14)
+    if dibSize < 40 {
+        return empty, errors.New("bmp: unsupported DIB header")
+    }
+    w := le32(data, 18)
+    h := le32(data, 22)
+    topDown := false
+    if h < 0 {   // le32 returns signed i32 — negative means top-down
+        h = -h
+        topDown = true
+    }
+    planes := le16(data, 26)
+    bpp := le16(data, 28)
+    comp := le32(data, 30)
+    if planes != 1 || comp != 0 {
+        return empty, errors.New("bmp: only uncompressed BI_RGB supported")
+    }
+    if bpp != 24 && bpp != 32 {
+        return empty, errors.New("bmp: only 24/32-bit supported")
+    }
+    if w <= 0 || h <= 0 {
+        return empty, errors.New("bmp: bad dimensions")
+    }
+    rowSize := ((bpp * w + 31) / 32) * 4
+    if pixOff + rowSize * h > byteLen {
+        return empty, errors.New("bmp: truncated pixel data")
+    }
+    im := cv_img.New(w, h, 3)
+    for y := 0; y < h; y = y + 1 {
+        srcY := y
+        if !topDown {
+            srcY = h - 1 - y
+        }
+        row := pixOff + srcY * rowSize
+        bytesPer := bpp / 8
+        for x := 0; x < w; x = x + 1 {
+            p := row + x * bytesPer
+            // BMP stores BGR(A)
+            im.Pix[(y * w + x) * 3] = float(int(data[p + 2]) & 255)
+            im.Pix[(y * w + x) * 3 + 1] = float(int(data[p + 1]) & 255)
+            im.Pix[(y * w + x) * 3 + 2] = float(int(data[p]) & 255)
+        }
+    }
+    return im, errors.New("")
+}
+
+// Encode writes a 24-bit bottom-up BMP (malloc'd — caller frees).
+// Any channel count: 1ch replicates gray to RGB, 3ch used directly.
+pub fn Encode(im: *cv_img.Image) -> (string, int) {
+    w := im.W
+    h := im.H
+    rowSize := ((24 * w + 31) / 32) * 4
+    pixLen := rowSize * h
+    total := 54 + pixLen
+    out := libc.calloc(total, 1)
+    out[0] = 66   // B
+    out[1] = 77   // M
+    wl32(out, 2, total)
+    wl32(out, 10, 54)          // pixel data offset
+    wl32(out, 14, 40)          // DIB header size
+    wl32(out, 18, w)
+    wl32(out, 22, h)
+    wl16(out, 26, 1)           // planes
+    wl16(out, 28, 24)          // bpp
+    wl32(out, 34, pixLen)      // image size
+    for y := 0; y < h; y = y + 1 {
+        dstY := h - 1 - y
+        row := 54 + dstY * rowSize
+        for x := 0; x < w; x = x + 1 {
+            p := row + x * 3
+            if im.Channels == 1 {
+                v := cv_img.Get(im, x, y, 0)
+                out[p] = int(v)
+                out[p + 1] = int(v)
+                out[p + 2] = int(v)
+            } else {
+                out[p] = int(cv_img.Get(im, x, y, 2))      // B
+                out[p + 1] = int(cv_img.Get(im, x, y, 1))  // G
+                out[p + 2] = int(cv_img.Get(im, x, y, 0))  // R
+            }
+        }
+    }
+    return out, total
+}
+
+fn wl16(b: string, off: int, v: int) {
+    b[off] = v & 255
+    b[off + 1] = (v >> 8) & 255
+}
+
+fn wl32(b: string, off: int, v: int) {
+    b[off] = v & 255
+    b[off + 1] = (v >> 8) & 255
+    b[off + 2] = (v >> 16) & 255
+    b[off + 3] = (v >> 24) & 255
+}

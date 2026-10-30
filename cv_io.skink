@@ -1,0 +1,109 @@
+// File:    cv_io.skink
+// Purpose: File-level image IO for skink-cv. Load sniffs the magic
+//          bytes (PNG/BMP/PNM) and decodes; SavePNG/SaveBMP/SavePPM
+//          encode + write. All file IO uses explicit byte lengths —
+//          binary-safe.
+module cv_io
+
+import "std/str"
+import "std/errors"
+import "std/fs"
+import "std/libc"
+import "cv_img"
+import "cv_png"
+import "cv_bmp"
+import "cv_ppm"
+
+// Load reads and decodes an image file (PNG, BMP, PPM/PGM).
+pub fn Load(path: string) -> (cv_img.Image, errors.Error) {
+    var empty cv_img.Image
+    size := int(fs.FileSize(path))
+    if size <= 0 {
+        return empty, errors.New("cv: cannot stat file")
+    }
+    f, ferr := fs.Open(path, "rb")
+    if str.Len(ferr.message) > 0 {
+        return empty, ferr
+    }
+    data := libc.malloc(size + 1)
+    got := 0
+    for got < size {
+        n := f.Read(string(int64(data) + int64(got)), size - got)
+        if n <= 0 {
+            break
+        }
+        got = got + n
+    }
+    f.Close()
+    if got < 2 {
+        libc.free(data)
+        return empty, errors.New("cv: empty file")
+    }
+    var im cv_img.Image
+    var err errors.Error
+    m0 := int(data[0]) & 255
+    m1 := int(data[1]) & 255
+    if m0 == 137 && m1 == 80 {
+        im, err = cv_png.Decode(data, got)
+    } else if m0 == 66 && m1 == 77 {
+        im, err = cv_bmp.Decode(data, got)
+    } else if m0 == 80 {
+        im, err = cv_ppm.Decode(data, got)
+    } else {
+        err = errors.New("cv: unrecognized image format")
+    }
+    libc.free(data)
+    return im, err
+}
+
+// saveAll writes n bytes to path.
+fn saveAll(path: string, data: string, n: int) -> errors.Error {
+    f, ferr := fs.Open(path, "wb")
+    if str.Len(ferr.message) > 0 {
+        return ferr
+    }
+    f.Write(data, n)
+    f.Close()
+    return errors.New("")
+}
+
+// SavePNG encodes + writes a PNG file.
+pub fn SavePNG(path: string, im: *cv_img.Image) -> errors.Error {
+    b, n := cv_png.Encode(im)
+    if n == 0 {
+        return errors.New("cv: png encode failed")
+    }
+    err := saveAll(path, b, n)
+    libc.free(b)
+    return err
+}
+
+// SaveBMP encodes + writes a 24-bit BMP file.
+pub fn SaveBMP(path: string, im: *cv_img.Image) -> errors.Error {
+    b, n := cv_bmp.Encode(im)
+    err := saveAll(path, b, n)
+    libc.free(b)
+    return err
+}
+
+// SavePPM encodes + writes a P6/P5 Netpbm file.
+pub fn SavePPM(path: string, im: *cv_img.Image) -> errors.Error {
+    b, n := cv_ppm.Encode(im)
+    err := saveAll(path, b, n)
+    libc.free(b)
+    return err
+}
+
+// Save dispatches on the file extension (.png/.bmp/.ppm/.pgm).
+pub fn Save(path: string, im: *cv_img.Image) -> errors.Error {
+    if str.EndsWith(path, ".png") {
+        return SavePNG(path, im)
+    }
+    if str.EndsWith(path, ".bmp") {
+        return SaveBMP(path, im)
+    }
+    if str.EndsWith(path, ".ppm") || str.EndsWith(path, ".pgm") {
+        return SavePPM(path, im)
+    }
+    return errors.New("cv: unknown extension (use .png/.bmp/.ppm/.pgm)")
+}

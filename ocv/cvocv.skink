@@ -1,0 +1,115 @@
+// File:    cvocv.skink
+// Purpose: OpenCV backend for skink-cv. Thin extern bindings over
+//          shim.cpp's C ABI — image files are decoded/encoded by
+//          OpenCV (covers JPEG/TIFF/WebP + more formats), and blur /
+//          Canny / Haar-face-detect run through OpenCV's optimized
+//          implementations. Requires OpenCV 4.x; the [link] section in
+//          this subpackage's skink.toml compiles the shim and links
+//          the OpenCV libs.
+module cvocv
+
+import "std/errors"
+import "std/libc"
+import "../cv_img"
+import "../cv_ops"
+
+extern fn skinkcv_read(path: string, w: *int, h: *int, ch: *int) -> string
+extern fn skinkcv_free(p: string)
+extern fn skinkcv_write(path: string, px: string, w: int, h: int, ch: int) -> int
+extern fn skinkcv_blur(px: string, w: int, h: int, ch: int, sigma: float) -> int
+extern fn skinkcv_canny(in: string, out: string, w: int, h: int, t1: float, t2: float) -> int
+extern fn skinkcv_detect_faces(cascadePath: string, gray: string, w: int, h: int, rects: string, maxRects: int) -> int
+
+// Load decodes an image file via cv::imread (any OpenCV-supported
+// format — PNG/JPEG/TIFF/WebP/...). Returns an RGB image.
+pub fn Load(path: string) -> (cv_img.Image, errors.Error) {
+    var w int
+    var h int
+    var ch int
+    px := skinkcv_read(path, &w, &h, &ch)
+    if int64(px) == 0 {
+        return cv_img.New(0, 0, 0), errors.New("cvocv: imread failed")
+    }
+    im := cv_img.FromBytes(w, h, ch, px, w * h * ch)
+    skinkcv_free(px)
+    return im, errors.New("")
+}
+
+// Save writes an image via cv::imwrite — the extension picks the codec.
+pub fn Save(path: string, im: *cv_img.Image) -> errors.Error {
+    bytes, n := cv_img.ToBytes(im)
+    rc := skinkcv_write(path, bytes, im.W, im.H, im.Channels)
+    libc.free(bytes)
+    _ = n
+    if rc != 0 {
+        return errors.New("cvocv: imwrite failed")
+    }
+    return errors.New("")
+}
+
+// GaussianBlur runs cv::GaussianBlur on a copy of the image.
+pub fn GaussianBlur(im: *cv_img.Image, sigma: float) -> cv_img.Image {
+    out := cv_img.Clone(im)
+    bytes, _ := cv_img.ToBytes(&out)
+    skinkcv_blur(bytes, im.W, im.H, im.Channels, sigma)
+    res := cv_img.FromBytes(im.W, im.H, im.Channels, bytes, im.W * im.H * im.Channels)
+    libc.free(bytes)
+    return res
+}
+
+// Canny runs cv::Canny edge detection on the grayscale image;
+// returns a 1-channel edge map.
+pub fn Canny(im: *cv_img.Image, t1: float, t2: float) -> cv_img.Image {
+    g := cv_ops.Grayscale(im)
+    inB, _ := cv_img.ToBytes(&g)
+    outB := libc.calloc(im.W * im.H, 1)
+    rc := skinkcv_canny(inB, outB, im.W, im.H, t1, t2)
+    libc.free(inB)
+    if rc != 0 {
+        libc.free(outB)
+        return cv_img.New(0, 0, 1)
+    }
+    res := cv_img.FromBytes(im.W, im.H, 1, outB, im.W * im.H)
+    libc.free(outB)
+    return res
+}
+
+// rdI32 reads a little-endian i32 out of a byte buffer.
+fn rdI32(b: string, off: int) -> int {
+    v := (int(b[off]) & 255) | ((int(b[off + 1]) & 255) << 8) |
+        ((int(b[off + 2]) & 255) << 16) | ((int(b[off + 3]) & 255) << 24)
+    return v
+}
+
+// FaceRect is one detected face bounding box.
+pub struct FaceRect {
+    X: int
+    Y: int
+    W: int
+    H: int
+}
+
+// DetectFaces runs a Haar cascade (e.g. haarcascade_frontalface_default.xml)
+// over the grayscale image and returns up to maxFaces rectangles.
+pub fn DetectFaces(im: *cv_img.Image, cascadePath: string, maxFaces: int) -> ([]FaceRect, errors.Error) {
+    var faces []FaceRect
+    g := cv_ops.Grayscale(im)
+    inB, _ := cv_img.ToBytes(&g)
+    rects := libc.calloc(maxFaces * 4, 4)
+    n := skinkcv_detect_faces(cascadePath, inB, im.W, im.H, rects, maxFaces)
+    libc.free(inB)
+    if n < 0 {
+        libc.free(rects)
+        return faces, errors.New("cvocv: cascade load failed")
+    }
+    for i := 0; i < n; i = i + 1 {
+        faces = append(faces, FaceRect{
+            X: rdI32(rects, i * 16),
+            Y: rdI32(rects, i * 16 + 4),
+            W: rdI32(rects, i * 16 + 8),
+            H: rdI32(rects, i * 16 + 12),
+        })
+    }
+    libc.free(rects)
+    return faces, errors.New("")
+}

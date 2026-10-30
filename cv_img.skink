@@ -1,0 +1,94 @@
+// File:    cv_img.skink
+// Purpose: Image model for skink-cv. An Image holds per-pixel float
+//          channels in [0,255] — 1 channel = grayscale, 3 = RGB
+//          (alpha is dropped on decode; see cv_png/cv_bmp). Float
+//          storage keeps filter math loss-free; ToBytes quantizes
+//          back to u8 for encoding.
+module cv_img
+
+import "std/libc"
+
+// Image is a width*height*channels float buffer, row-major.
+pub struct Image {
+    W:        int
+    H:        int
+    Channels: int      // 1 = grayscale, 3 = RGB
+    Pix:      []float
+}
+
+// New allocates a zeroed W×H image with `channels` channels.
+pub fn New(w: int, h: int, channels: int) -> Image {
+    var p []float
+    for i := 0; i < w * h * channels; i = i + 1 {
+        p = append(p, 0.0)
+    }
+    return Image{W: w, H: h, Channels: channels, Pix: p}
+}
+
+// FromBytes wraps u8 pixel data (0-255) into float storage.
+pub fn FromBytes(w: int, h: int, channels: int, data: string, dataLen: int) -> Image {
+    var p []float
+    n := w * h * channels
+    if n > dataLen {
+        n = dataLen
+    }
+    for i := 0; i < n; i = i + 1 {
+        p = append(p, float(int(data[i]) & 255))
+    }
+    for i := n; i < w * h * channels; i = i + 1 {
+        p = append(p, 0.0)
+    }
+    return Image{W: w, H: h, Channels: channels, Pix: p}
+}
+
+// Get returns pixel (x,y)'s channel-c value (clamped coords).
+pub fn Get(im: *Image, x: int, y: int, c: int) -> float {
+    if x < 0 {
+        x = 0
+    }
+    if x >= im.W {
+        x = im.W - 1
+    }
+    if y < 0 {
+        y = 0
+    }
+    if y >= im.H {
+        y = im.H - 1
+    }
+    return im.Pix[(y * im.W + x) * im.Channels + c]
+}
+
+// Set writes pixel (x,y)'s channel-c value.
+pub fn Set(im: *Image, x: int, y: int, c: int, v: float) {
+    if x < 0 || x >= im.W || y < 0 || y >= im.H {
+        return
+    }
+    im.Pix[(y * im.W + x) * im.Channels + c] = v
+}
+
+// Clone deep-copies the image.
+pub fn Clone(im: *Image) -> Image {
+    var p []float
+    for i := 0; i < len(im.Pix); i = i + 1 {
+        p = append(p, im.Pix[i])
+    }
+    return Image{W: im.W, H: im.H, Channels: im.Channels, Pix: p}
+}
+
+// ToBytes quantizes pixels to interleaved u8 (malloc'd — caller
+// frees). Returns (bytes, len) where len = W*H*Channels.
+pub fn ToBytes(im: *Image) -> (string, int) {
+    n := im.W * im.H * im.Channels
+    out := libc.malloc(n)
+    for i := 0; i < n; i = i + 1 {
+        v := im.Pix[i]
+        if v < 0.0 {
+            v = 0.0
+        }
+        if v > 255.0 {
+            v = 255.0
+        }
+        out[i] = int(v + 0.5)
+    }
+    return out, n
+}

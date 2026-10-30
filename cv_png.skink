@@ -1,0 +1,344 @@
+// File:    cv_png.skink
+// Purpose: PNG codec for skink-cv. Decode supports 8-bit non-interlaced
+//          PNGs in color types 0 (gray), 2 (RGB), 3 (palette), 4
+//          (gray+alpha), 6 (RGBA) — alpha is dropped, palette expands
+//          to RGB. All five scanline filters (None/Sub/Up/Average/
+//          Paeth) are implemented. Encode writes filter-0 zlib
+//          streams via std/compress; CRC32 is computed in Skink.
+module cv_png
+
+import "std/str"
+import "std/errors"
+import "std/libc"
+import "std/compress"
+import "cv_img"
+
+var crcTable []int64
+var crcReady = false
+
+// crcInit builds the CRC32 lookup table once. Values live in int64 —
+// Skink `int` is 32-bit so u32 CRCs would overflow.
+fn crcInit() {
+    if crcReady {
+        return
+    }
+    // -306674912 is 0xEDB88320 sign-extended; &mask keeps low 32 bits.
+    poly := int64(-306674912)
+    mask := int64(65536) * 65536 - 1
+    for n := 0; n < 256; n = n + 1 {
+        c := int64(n)
+        for k := 0; k < 8; k = k + 1 {
+            if (c & 1) != 0 {
+                c = (poly ^ (c >> 1)) & mask
+            } else {
+                c = c >> 1
+            }
+        }
+        crcTable = append(crcTable, c)
+    }
+    crcReady = true
+}
+
+// crc32 computes a CRC32 over len bytes of buf starting at off.
+// Returns the CRC as an i32-pattern int (may be negative — callers
+// write it via put32 which masks each byte correctly).
+fn crc32(buf: string, off: int, n: int) -> int {
+    crcInit()
+    mask := int64(65536) * 65536 - 1
+    c := mask
+    for i := 0; i < n; i = i + 1 {
+        c = (crcTable[int64((c ^ int64(int(buf[off + i]) & 255)) & 255)] ^ (c >> 8)) & mask
+    }
+    return int(c ^ mask)
+}
+
+// u32be/u16be read big-endian ints.
+fn u32be(b: string, off: int) -> int {
+    return ((int(b[off]) & 255) << 24) | ((int(b[off + 1]) & 255) << 16) |
+        ((int(b[off + 2]) & 255) << 8) | (int(b[off + 3]) & 255)
+}
+
+// channelsOf maps PNG color type to samples per pixel.
+fn channelsOf(ct: int) -> int {
+    if ct == 0 {
+        return 1
+    }
+    if ct == 2 {
+        return 3
+    }
+    if ct == 3 {
+        return 1   // palette index
+    }
+    if ct == 4 {
+        return 2   // gray + alpha
+    }
+    if ct == 6 {
+        return 4   // RGBA
+    }
+    return 0
+}
+
+// Decode parses a PNG image. Returns a grayscale (1ch) or RGB (3ch)
+// Image. Errors on interlaced or non-8-bit files.
+pub fn Decode(data: string, byteLen: int) -> (cv_img.Image, errors.Error) {
+    var empty cv_img.Image
+    if byteLen < 8 {
+        return empty, errors.New("png: too short")
+    }
+    // signature check
+    if (int(data[0]) & 255) != 137 || (int(data[1]) & 255) != 80 ||
+        (int(data[2]) & 255) != 78 || (int(data[3]) & 255) != 71 {
+        return empty, errors.New("png: bad signature")
+    }
+    pos := 8
+    w := 0
+    h := 0
+    bitDepth := 0
+    colorType := 0
+    interlace := 0
+    var idat string   // malloc'd concatenation of IDAT payloads
+    idatLen := 0
+    var plte string   // palette, malloc'd
+    plteLen := 0
+    seenIHDR := false
+    for pos + 12 <= byteLen {
+        clen := u32be(data, pos)
+        ct0 := int(data[pos + 4]) & 255
+        ct1 := int(data[pos + 5]) & 255
+        ct2 := int(data[pos + 6]) & 255
+        ct3 := int(data[pos + 7]) & 255
+        if pos + 12 + clen > byteLen {
+            break
+        }
+        body := pos + 8
+        if ct0 == 73 && ct1 == 72 && ct2 == 68 && ct3 == 82 {      // IHDR
+            w = u32be(data, body)
+            h = u32be(data, body + 4)
+            bitDepth = int(data[body + 8]) & 255
+            colorType = int(data[body + 9]) & 255
+            interlace = int(data[body + 12]) & 255
+            seenIHDR = true
+        } else if ct0 == 73 && ct1 == 68 && ct2 == 65 && ct3 == 84 { // IDAT
+            nb := libc.malloc(idatLen + clen)
+            if idatLen > 0 {
+                libc.memcpy(nb, idat, idatLen)
+                libc.free(idat)
+            }
+            libc.memcpy(string(int64(nb) + int64(idatLen)), string(int64(data) + int64(body)), clen)
+            idat = nb
+            idatLen = idatLen + clen
+        } else if ct0 == 80 && ct1 == 76 && ct2 == 84 && ct3 == 69 { // PLTE
+            plte = libc.malloc(clen)
+            libc.memcpy(plte, string(int64(data) + int64(body)), clen)
+            plteLen = clen
+        } else if ct0 == 73 && ct1 == 69 && ct2 == 78 && ct3 == 68 { // IEND
+            break
+        }
+        pos = pos + 12 + clen
+    }
+    if !seenIHDR {
+        return empty, errors.New("png: no IHDR")
+    }
+    if bitDepth != 8 {
+        return empty, errors.New("png: only 8-bit depth supported")
+    }
+    if interlace != 0 {
+        return empty, errors.New("png: interlaced images unsupported")
+    }
+    bpp := channelsOf(colorType)
+    if bpp == 0 {
+        return empty, errors.New("png: unsupported color type")
+    }
+    rawSize := h * (1 + w * bpp)
+    inf := compress.Inflater{}
+    raw := inf.Decompress(idat, idatLen, rawSize)
+    if idatLen > 0 {
+        libc.free(idat)
+    }
+    if int64(raw) == 0 {
+        return empty, errors.New("png: inflate failed")
+    }
+
+    // Unfilter scanlines.
+    stride := w * bpp
+    out := libc.malloc(rawSize)
+    prev := 0     // offset of previous scanline's data in `out`
+    src := 0      // cursor into raw
+    for y := 0; y < h; y = y + 1 {
+        ft := int(raw[src]) & 255
+        src = src + 1
+        rowOff := y * stride
+        for x := 0; x < stride; x = x + 1 {
+            a := int(raw[src + x]) & 255
+            left := 0
+            up := 0
+            upleft := 0
+            if x >= bpp {
+                left = int(out[rowOff + x - bpp]) & 255
+            }
+            if y > 0 {
+                up = int(out[prev + x]) & 255
+                if x >= bpp {
+                    upleft = int(out[prev + x - bpp]) & 255
+                }
+            }
+            v := a
+            if ft == 1 {
+                v = a + left
+            } else if ft == 2 {
+                v = a + up
+            } else if ft == 3 {
+                v = a + (left + up) / 2
+            } else if ft == 4 {
+                v = a + paeth(left, up, upleft)
+            } else if ft != 0 {
+                libc.free(raw)
+                libc.free(out)
+                return empty, errors.New("png: bad filter type")
+            }
+            out[rowOff + x] = v & 255
+        }
+        src = src + stride
+        prev = rowOff
+    }
+    libc.free(raw)
+
+    // Map decoded pixels into the Image (palette expands; alpha drops).
+    var im cv_img.Image
+    if colorType == 0 {
+        im = cv_img.FromBytes(w, h, 1, out, w * h)
+    } else if colorType == 2 {
+        im = cv_img.FromBytes(w, h, 3, out, w * h * 3)
+    } else if colorType == 3 {
+        // palette indices → RGB via PLTE
+        im = cv_img.New(w, h, 3)
+        for i := 0; i < w * h; i = i + 1 {
+            idx := (int(out[i]) & 255) * 3
+            if idx + 2 < plteLen {
+                im.Pix[i * 3] = float(int(plte[idx]) & 255)
+                im.Pix[i * 3 + 1] = float(int(plte[idx + 1]) & 255)
+                im.Pix[i * 3 + 2] = float(int(plte[idx + 2]) & 255)
+            }
+        }
+    } else if colorType == 4 {
+        // gray+alpha → gray
+        im = cv_img.New(w, h, 1)
+        for i := 0; i < w * h; i = i + 1 {
+            im.Pix[i] = float(int(out[i * 2]) & 255)
+        }
+    } else {
+        // RGBA → RGB
+        im = cv_img.New(w, h, 3)
+        for i := 0; i < w * h; i = i + 1 {
+            im.Pix[i * 3] = float(int(out[i * 4]) & 255)
+            im.Pix[i * 3 + 1] = float(int(out[i * 4 + 1]) & 255)
+            im.Pix[i * 3 + 2] = float(int(out[i * 4 + 2]) & 255)
+        }
+    }
+    libc.free(out)
+    if plteLen > 0 {
+        libc.free(plte)
+    }
+    return im, errors.New("")
+}
+
+// paeth is the PNG Paeth predictor.
+fn paeth(a: int, b: int, c: int) -> int {
+    p := a + b - c
+    pa := p - a
+    if pa < 0 {
+        pa = -pa
+    }
+    pb := p - b
+    if pb < 0 {
+        pb = -pb
+    }
+    pc := p - c
+    if pc < 0 {
+        pc = -pc
+    }
+    if pa <= pb && pa <= pc {
+        return a
+    }
+    if pb <= pc {
+        return b
+    }
+    return c
+}
+
+// Encode renders an Image as a PNG (malloc'd — caller frees). Color
+// type is 0 for 1-channel images, 2 for 3-channel. Filter 0 on every
+// scanline; zlib via std/compress.
+pub fn Encode(im: *cv_img.Image) -> (string, int) {
+    bpp := im.Channels
+    ct := 2
+    if bpp == 1 {
+        ct = 0
+    }
+    stride := im.W * bpp
+    rawLen := im.H * (1 + stride)
+    raw := libc.malloc(rawLen)
+    bytes, _ := cv_img.ToBytes(im)
+    src := 0
+    for y := 0; y < im.H; y = y + 1 {
+        raw[y * (1 + stride)] = 0   // filter: none
+        libc.memcpy(string(int64(raw) + int64(y * (1 + stride) + 1)),
+            string(int64(bytes) + int64(y * stride)), stride)
+        src = src + stride
+    }
+    libc.free(bytes)
+    def := compress.Deflater{windowBits: 15, memLevel: 8}
+    comp, compLen := def.Compress(raw, rawLen)
+    libc.free(raw)
+    if compLen == 0 {
+        return "", 0
+    }
+
+    // sizes: sig(8) + IHDR(25) + IDAT(12+compLen) + IEND(12)
+    total := 8 + 25 + 12 + compLen + 12
+    out := libc.malloc(total)
+    // signature: 89 50 4E 47 0D 0A 1A 0A
+    out[0] = 137
+    out[1] = 80
+    out[2] = 78
+    out[3] = 71
+    out[4] = 13
+    out[5] = 10
+    out[6] = 26
+    out[7] = 10
+
+    // IHDR
+    put32(out, 8, 13)
+    libc.memcpy(string(int64(out) + 12), "IHDR", 4)
+    put32(out, 16, im.W)
+    put32(out, 20, im.H)
+    out[24] = 8      // bit depth
+    out[25] = ct     // color type
+    out[26] = 0      // compression
+    out[27] = 0      // filter
+    out[28] = 0      // interlace
+    put32(out, 29, crc32(out, 12, 17))
+
+    // IDAT
+    idatOff := 33
+    put32(out, idatOff, compLen)
+    libc.memcpy(string(int64(out) + int64(idatOff + 4)), "IDAT", 4)
+    libc.memcpy(string(int64(out) + int64(idatOff + 8)), comp, compLen)
+    put32(out, idatOff + 8 + compLen, crc32(out, idatOff + 4, 4 + compLen))
+    libc.free(comp)
+
+    // IEND
+    iendOff := idatOff + 12 + compLen
+    put32(out, iendOff, 0)
+    libc.memcpy(string(int64(out) + int64(iendOff + 4)), "IEND", 4)
+    put32(out, iendOff + 8, crc32(out, iendOff + 4, 4))
+    return out, total
+}
+
+// put32 writes a big-endian u32.
+fn put32(b: string, off: int, v: int) {
+    b[off] = (v >> 24) & 255
+    b[off + 1] = (v >> 16) & 255
+    b[off + 2] = (v >> 8) & 255
+    b[off + 3] = v & 255
+}

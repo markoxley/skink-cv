@@ -1,0 +1,206 @@
+// File:    cv_filter.skink
+// Purpose: Convolution filters for skink-cv — arbitrary-kernel convolve
+//          (edge-clamped), box/Gaussian blur, sharpen, Sobel edges,
+//          threshold, invert, histogram + equalization.
+module cv_filter
+
+import "std/math"
+import "cv_img"
+import "cv_ops"
+
+// Convolve applies a k×k kernel (row-major, odd k) per channel with
+// edge-clamped borders.
+pub fn Convolve(im: *cv_img.Image, kernel: []float, k: int) -> cv_img.Image {
+    out := cv_img.New(im.W, im.H, im.Channels)
+    half := k / 2
+    for y := 0; y < im.H; y = y + 1 {
+        for x := 0; x < im.W; x = x + 1 {
+            for c := 0; c < im.Channels; c = c + 1 {
+                acc := 0.0
+                for ky := 0; ky < k; ky = ky + 1 {
+                    for kx := 0; kx < k; kx = kx + 1 {
+                        acc = acc + kernel[ky * k + kx] *
+                            cv_img.Get(im, x + kx - half, y + ky - half, c)
+                    }
+                }
+                out.Pix[(y * im.W + x) * im.Channels + c] = acc
+            }
+        }
+    }
+    return out
+}
+
+// BoxBlur applies a mean filter of side k.
+pub fn BoxBlur(im: *cv_img.Image, k: int) -> cv_img.Image {
+    var ker []float
+    v := 1.0 / float(k * k)
+    for i := 0; i < k * k; i = i + 1 {
+        ker = append(ker, v)
+    }
+    return Convolve(im, ker, k)
+}
+
+// GaussianKernel builds a normalized (2r+1)² kernel for sigma.
+pub fn GaussianKernel(sigma: float) -> ([]float, int) {
+    r := int(sigma * 3.0)
+    if r < 1 {
+        r = 1
+    }
+    k := 2 * r + 1
+    var ker []float
+    sum := 0.0
+    for y := -r; y <= r; y = y + 1 {
+        for x := -r; x <= r; x = x + 1 {
+            v := math.Exp(-(float(x * x + y * y)) / (2.0 * sigma * sigma))
+            ker = append(ker, v)
+            sum = sum + v
+        }
+    }
+    for i := 0; i < len(ker); i = i + 1 {
+        ker[i] = ker[i] / sum
+    }
+    return ker, k
+}
+
+// GaussianBlur applies a Gaussian blur of the given sigma.
+pub fn GaussianBlur(im: *cv_img.Image, sigma: float) -> cv_img.Image {
+    ker, k := GaussianKernel(sigma)
+    return Convolve(im, ker, k)
+}
+
+// Sharpen applies the standard unsharp mask kernel.
+pub fn Sharpen(im: *cv_img.Image) -> cv_img.Image {
+    var ker []float
+    ker = append(ker, 0.0)
+    ker = append(ker, -1.0)
+    ker = append(ker, 0.0)
+    ker = append(ker, -1.0)
+    ker = append(ker, 5.0)
+    ker = append(ker, -1.0)
+    ker = append(ker, 0.0)
+    ker = append(ker, -1.0)
+    ker = append(ker, 0.0)
+    return Convolve(im, ker, 3)
+}
+
+// Sobel returns the gradient-magnitude image (grayscale input). Edges
+// become bright.
+pub fn Sobel(im: *cv_img.Image) -> cv_img.Image {
+    g := im
+    if im.Channels != 1 {
+        gg := cv_ops.Grayscale(im)
+        g = &gg
+    }
+    out := cv_img.New(g.W, g.H, 1)
+    for y := 0; y < g.H; y = y + 1 {
+        for x := 0; x < g.W; x = x + 1 {
+            gx := -cv_img.Get(g, x - 1, y - 1, 0) - 2.0 * cv_img.Get(g, x - 1, y, 0) -
+                cv_img.Get(g, x - 1, y + 1, 0) +
+                cv_img.Get(g, x + 1, y - 1, 0) + 2.0 * cv_img.Get(g, x + 1, y, 0) +
+                cv_img.Get(g, x + 1, y + 1, 0)
+            gy := -cv_img.Get(g, x - 1, y - 1, 0) - 2.0 * cv_img.Get(g, x, y - 1, 0) -
+                cv_img.Get(g, x + 1, y - 1, 0) +
+                cv_img.Get(g, x - 1, y + 1, 0) + 2.0 * cv_img.Get(g, x, y + 1, 0) +
+                cv_img.Get(g, x + 1, y + 1, 0)
+            out.Pix[y * g.W + x] = math.Sqrt(gx * gx + gy * gy)
+        }
+    }
+    return out
+}
+
+// Threshold binarizes a grayscale image at `t` (0-255): ≥t → 255.
+pub fn Threshold(im: *cv_img.Image, t: float) -> cv_img.Image {
+    out := cv_img.Clone(im)
+    for i := 0; i < len(out.Pix); i = i + 1 {
+        if out.Pix[i] >= t {
+            out.Pix[i] = 255.0
+        } else {
+            out.Pix[i] = 0.0
+        }
+    }
+    return out
+}
+
+// Invert negates all channels (v → 255-v).
+pub fn Invert(im: *cv_img.Image) -> cv_img.Image {
+    out := cv_img.Clone(im)
+    for i := 0; i < len(out.Pix); i = i + 1 {
+        out.Pix[i] = 255.0 - out.Pix[i]
+    }
+    return out
+}
+
+// Histogram returns the 256-bin intensity histogram of a grayscale
+// image (channels averaged for RGB).
+pub fn Histogram(im: *cv_img.Image) -> []int {
+    var hist []int
+    for i := 0; i < 256; i = i + 1 {
+        hist = append(hist, 0)
+    }
+    if im.Channels == 1 {
+        for i := 0; i < im.W * im.H; i = i + 1 {
+            v := int(im.Pix[i] + 0.5)
+            if v < 0 {
+                v = 0
+            }
+            if v > 255 {
+                v = 255
+            }
+            hist[v] = hist[v] + 1
+        }
+    } else {
+        for i := 0; i < im.W * im.H; i = i + 1 {
+            v := int((im.Pix[i * 3] + im.Pix[i * 3 + 1] + im.Pix[i * 3 + 2]) / 3.0 + 0.5)
+            if v < 0 {
+                v = 0
+            }
+            if v > 255 {
+                v = 255
+            }
+            hist[v] = hist[v] + 1
+        }
+    }
+    return hist
+}
+
+// Equalize applies histogram equalization to a grayscale image.
+pub fn Equalize(im: *cv_img.Image) -> cv_img.Image {
+    g := im
+    if im.Channels != 1 {
+        gg := cv_ops.Grayscale(im)
+        g = &gg
+    }
+    hist := Histogram(g)
+    // CDF
+    var cdf []int
+    sum := 0
+    for i := 0; i < 256; i = i + 1 {
+        sum = sum + hist[i]
+        cdf = append(cdf, sum)
+    }
+    cdfMin := 0
+    for i := 0; i < 256; i = i + 1 {
+        if cdf[i] > 0 {
+            cdfMin = cdf[i]
+            break
+        }
+    }
+    total := g.W * g.H
+    denom := total - cdfMin
+    if denom <= 0 {
+        return cv_img.Clone(g)
+    }
+    out := cv_img.New(g.W, g.H, 1)
+    for i := 0; i < total; i = i + 1 {
+        v := int(g.Pix[i] + 0.5)
+        if v < 0 {
+            v = 0
+        }
+        if v > 255 {
+            v = 255
+        }
+        nv := float(cdf[v] - cdfMin) * 255.0 / float(denom)
+        out.Pix[i] = nv
+    }
+    return out
+}

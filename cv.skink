@@ -1,0 +1,67 @@
+// File:    cv.skink
+// Purpose: Root module for skink-cv. Re-exports the image core so
+//          `import "cv"` covers the common API. The OpenCV backend is
+//          the separate `cv/ocv` subpackage (requires OpenCV + [link]).
+//
+//          Layers:
+//            cv_img    — Image model (float channels, 1 or 3)
+//            cv_png    — PNG decode/encode (zlib via std/compress)
+//            cv_bmp    — BMP 24/32-bit decode + 24-bit encode
+//            cv_ppm    — PNM P2/P3/P5/P6 decode + encode
+//            cv_io     — Load/Save dispatch by magic/extension
+//            cv_ops    — grayscale, crop, resize, flip, rotate, pad
+//            cv_filter — convolve, blur, sharpen, Sobel, threshold,
+//                        invert, histogram, equalization
+//            cv_feat   — connected components + Harris corners
+module cv
+
+import "cv_img"
+import "cv_png"
+import "cv_bmp"
+import "cv_ppm"
+import "cv_io"
+import "cv_ops"
+import "cv_filter"
+import "cv_feat"
+import "std/str"
+import "std/errors"
+
+// NewImage allocates a zeroed image.
+pub fn NewImage(w: int, h: int, channels: int) -> cv_img.Image {
+    return cv_img.New(w, h, channels)
+}
+
+// Load decodes an image file (PNG/BMP/PNM).
+pub fn Load(path: string) -> (cv_img.Image, errors.Error) {
+    return cv_io.Load(path)
+}
+
+// Save writes an image — format chosen by extension.
+pub fn Save(path: string, im: *cv_img.Image) -> errors.Error {
+    return cv_io.Save(path, im)
+}
+
+// Edges is a convenience Sobel call.
+pub fn Edges(im: *cv_img.Image) -> cv_img.Image {
+    return cv_filter.Sobel(im)
+}
+
+// Blur is a convenience GaussianBlur call.
+pub fn Blur(im: *cv_img.Image, sigma: float) -> cv_img.Image {
+    return cv_filter.GaussianBlur(im, sigma)
+}
+
+// Grayscale converts to 1 channel.
+pub fn Grayscale(im: *cv_img.Image) -> cv_img.Image {
+    return cv_ops.Grayscale(im)
+}
+
+// Components labels blobs above threshold (convenience wrapper).
+pub fn Components(im: *cv_img.Image, threshold: float) -> (cv_img.Image, []cv_feat.Blob) {
+    return cv_feat.Components(im, threshold)
+}
+
+// Resize is a convenience bilinear resize.
+pub fn Resize(im: *cv_img.Image, w: int, h: int) -> cv_img.Image {
+    return cv_ops.ResizeBilinear(im, w, h)
+}

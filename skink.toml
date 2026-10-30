@@ -1,0 +1,17 @@
+# Skink Project Manifest (managed by scales)
+
+[package]
+name = "cv"
+version = "0.1.0"
+author = "mark"
+entry = "cv.skink"
+description = "Computer vision for Skink: pure-Skink image core (PNG/BMP/PPM codecs, resize/crop/flip, convolutions, Sobel edges, thresholding, histogram equalization, connected components, Harris corners) plus an optional OpenCV backend in the ocv/ subpackage"
+license = "Apache-2.0"
+
+[target]
+env = "std"
+no_std = false
+os = "any"
+arch = "any"
+
+[dependencies]

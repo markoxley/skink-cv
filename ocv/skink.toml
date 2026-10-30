@@ -1,0 +1,24 @@
+# Skink Project Manifest (managed by scales)
+
+[package]
+name = "ocv"
+version = "0.1.0"
+author = "mark"
+entry = "cvocv.skink"
+description = "OpenCV backend for skink-cv — requires system OpenCV 4.x"
+license = "Apache-2.0"
+
+[target]
+env = "std"
+no_std = false
+os = "linux"
+arch = "any"
+
+# Native dependency: compiles shim.cpp and links system OpenCV.
+# On non-Debian layouts, edit the -I/-L paths below or override with
+# SKINK_CLANG_FLAGS (env flags are appended to the link command).
+[link]
+sources = ["shim.cpp"]
+libs = ["opencv_core", "opencv_imgproc", "opencv_imgcodecs", "opencv_objdetect", "opencv_videoio"]
+cflags = ["-std=c++17", "-I/usr/include/opencv4"]
+ldflags = ["-lstdc++"]

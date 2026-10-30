@@ -1,0 +1,209 @@
+// File:    cv_feat.skink
+// Purpose: Feature extraction for skink-cv — connected-component
+//          labeling (two-pass union-find on thresholded images),
+//          bounding boxes, and Harris corner scoring with local
+//          maxima detection.
+module cv_feat
+
+import "cv_img"
+import "cv_ops"
+
+// Blob is one connected component: pixel count + bounding box.
+pub struct Blob {
+    Label: int
+    Area:  int
+    X:     int
+    Y:     int
+    W:     int
+    H:     int
+}
+
+// uf is a union-find over ints.
+struct uf {
+    parent: []int
+}
+
+fn ufNew(n: int) -> uf {
+    var p []int
+    for i := 0; i < n; i = i + 1 {
+        p = append(p, i)
+    }
+    return uf{parent: p}
+}
+
+fn ufFind(u: *uf, i: int) -> int {
+    r := i
+    for u.parent[r] != r {
+        r = u.parent[r]
+    }
+    // path halving
+    for u.parent[i] != r {
+        nx := u.parent[i]
+        u.parent[i] = r
+        i = nx
+    }
+    return r
+}
+
+fn ufUnion(u: *uf, a: int, b: int) {
+    ra := ufFind(u, a)
+    rb := ufFind(u, b)
+    if ra != rb {
+        u.parent[ra] = rb
+    }
+}
+
+// Components labels foreground pixels (>= threshold) in a grayscale
+// image with 4-connectivity. Returns the label image (as floats) and
+// the blob list.
+pub fn Components(im: *cv_img.Image, threshold: float) -> (cv_img.Image, []Blob) {
+    g := im
+    if im.Channels != 1 {
+        gg := cv_ops.Grayscale(im)
+        g = &gg
+    }
+    n := g.W * g.H
+    u := ufNew(n)
+    var lbl []int
+    next := 1
+    var rootLbl map[int]int
+    rootLbl = make(map[int]int)
+
+    // first pass: provisional labels via union-find slot = pixel idx
+    for i := 0; i < n; i = i + 1 {
+        lbl = append(lbl, 0)
+    }
+    for y := 0; y < g.H; y = y + 1 {
+        for x := 0; x < g.W; x = x + 1 {
+            i := y * g.W + x
+            if g.Pix[i] < threshold {
+                continue
+            }
+            lft := x > 0 && g.Pix[i - 1] >= threshold
+            up := y > 0 && g.Pix[i - g.W] >= threshold
+            if lft && up {
+                ufUnion(&u, i, i - 1)
+                ufUnion(&u, i, i - g.W)
+            } else if lft {
+                ufUnion(&u, i, i - 1)
+            } else if up {
+                ufUnion(&u, i, i - g.W)
+            }
+        }
+    }
+    // second pass: map roots to dense labels, gather stats
+    var boxes []Blob
+    for y := 0; y < g.H; y = y + 1 {
+        for x := 0; x < g.W; x = x + 1 {
+            i := y * g.W + x
+            if g.Pix[i] < threshold {
+                continue
+            }
+            r := ufFind(&u, i)
+            l, ok := mapGetI(rootLbl, r)
+            if !ok {
+                l = next
+                next = next + 1
+                rootLbl[r] = l
+                boxes = append(boxes, Blob{Label: l, Area: 0, X: x, Y: y, W: 1, H: 1})
+            }
+            lbl[i] = l
+            b := &boxes[l - 1]
+            b.Area = b.Area + 1
+            if x < b.X {
+                b.W = b.W + b.X - x
+                b.X = x
+            }
+            if x >= b.X + b.W {
+                b.W = x - b.X + 1
+            }
+            if y < b.Y {
+                b.H = b.H + b.Y - y
+                b.Y = y
+            }
+            if y >= b.Y + b.H {
+                b.H = y - b.Y + 1
+            }
+        }
+    }
+    out := cv_img.New(g.W, g.H, 1)
+    for i := 0; i < n; i = i + 1 {
+        out.Pix[i] = float(lbl[i])
+    }
+    return out, boxes
+}
+
+// mapGetI is a tiny map-int get returning (value, ok).
+fn mapGetI(m: map[int]int, k: int) -> (int, bool) {
+    v, ok := m[k]
+    return v, ok
+}
+
+// HarrisScore computes the Harris corner response for a grayscale
+// image: R = det(M) - k*trace(M)² over a 3×3 window, Sobel gradients.
+pub fn HarrisScore(im: *cv_img.Image, k: float) -> cv_img.Image {
+    g := im
+    if im.Channels != 1 {
+        gg := cv_ops.Grayscale(im)
+        g = &gg
+    }
+    out := cv_img.New(g.W, g.H, 1)
+    for y := 1; y < g.H - 1; y = y + 1 {
+        for x := 1; x < g.W - 1; x = x + 1 {
+            ixx := 0.0
+            iyy := 0.0
+            ixy := 0.0
+            for wy := -1; wy <= 1; wy = wy + 1 {
+                for wx := -1; wx <= 1; wx = wx + 1 {
+                    px := x + wx
+                    py := y + wy
+                    gx := cv_img.Get(g, px + 1, py, 0) - cv_img.Get(g, px - 1, py, 0)
+                    gy := cv_img.Get(g, px, py + 1, 0) - cv_img.Get(g, px, py - 1, 0)
+                    ixx = ixx + gx * gx
+                    iyy = iyy + gy * gy
+                    ixy = ixy + gx * gy
+                }
+            }
+            det := ixx * iyy - ixy * ixy
+            tr := ixx + iyy
+            out.Pix[y * g.W + x] = det - k * tr * tr
+        }
+    }
+    return out
+}
+
+// Point is an (x,y) feature location.
+pub struct Point {
+    X: int
+    Y: int
+}
+
+// LocalMaxima returns points where score exceeds `thresh` and is the
+// max within a `radius`-pixel neighborhood (greedy NMS).
+pub fn LocalMaxima(score: *cv_img.Image, thresh: float, radius: int) -> []Point {
+    var pts []Point
+    for y := 0; y < score.H; y = y + 1 {
+        for x := 0; x < score.W; x = x + 1 {
+            v := score.Pix[y * score.W + x]
+            if v < thresh {
+                continue
+            }
+            isMax := true
+            for dy := -radius; dy <= radius && isMax; dy = dy + 1 {
+                for dx := -radius; dx <= radius; dx = dx + 1 {
+                    if dx == 0 && dy == 0 {
+                        continue
+                    }
+                    if cv_img.Get(score, x + dx, y + dy, 0) > v {
+                        isMax = false
+                        break
+                    }
+                }
+            }
+            if isMax {
+                pts = append(pts, Point{X: x, Y: y})
+            }
+        }
+    }
+    return pts
+}
