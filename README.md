@@ -12,8 +12,8 @@ scales add markoxley/skink-cv/ocv   # optional OpenCV backend
 ## Quick start
 
 ```skink
-import "cv"
-import "cv_filter"
+import "mod/markoxley/skink-cv"
+import "mod/markoxley/skink-cv/cv_filter"
 
 im, err := cv.Load("photo.png")           // PNG/BMP/PNM auto-detected
 g   := cv.Grayscale(&im)
@@ -40,6 +40,8 @@ cv.Save("edges.png", &edges)
 **Find blobs:**
 
 ```skink
+import "mod/markoxley/skink-cv/cv_feat"
+
 lbl, blobs := cv_feat.Components(&gray, 128.0)
 for i := 0; i < len(blobs); i = i + 1 {
     println("blob at ", blobs[i].X, ",", blobs[i].Y,
@@ -50,6 +52,8 @@ for i := 0; i < len(blobs); i = i + 1 {
 **Corner detection:**
 
 ```skink
+import "mod/markoxley/skink-cv/cv_feat"
+
 score := cv_feat.HarrisScore(&gray, 0.04)
 pts := cv_feat.LocalMaxima(&score, 1000.0, 3)
 ```
@@ -57,6 +61,8 @@ pts := cv_feat.LocalMaxima(&score, 1000.0, 3)
 **Histogram equalization:**
 
 ```skink
+import "mod/markoxley/skink-cv/cv_filter"
+
 eq := cv_filter.Equalize(&gray)
 ```
 

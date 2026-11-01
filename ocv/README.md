@@ -32,14 +32,14 @@ The subpackage's `skink.toml` carries a `[link]` section that compiles `shim.cpp
 
 The manifest's `cflags` assume the Debian layout (`-I/usr/include/opencv4`). If your distro puts headers elsewhere, either:
 
-- edit `mod/markoxley/skink-ocv.../ocv/skink.toml` in the module cache,
+- edit `ocv/skink.toml` in the cached package (`~/.local/skink/scales/packages/markoxley/skink-cv/<version>/ocv/skink.toml`),
 - or export `SKINK_CLANG_FLAGS="-I/path/to/opencv4 -L/path/to/lib"` when building (env flags are appended by the driver).
 
 ## API
 
 ```skink
-import "cvocv"
-import "cv_ops"
+import "mod/markoxley/skink-cv/ocv"
+import "mod/markoxley/skink-cv/cv_ops"
 
 im, err := cvocv.Load("photo.jpg")          // cv::imread — JPEG/PNG/TIFF/…
 cvocv.Save("out.png", &im)                  // cv::imwrite
