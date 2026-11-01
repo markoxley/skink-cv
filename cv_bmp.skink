@@ -9,13 +9,19 @@ import "std/errors"
 import "std/libc"
 import "cv_img"
 
+// Raw byte accessors for malloc'd BMP buffers — string indexing is
+// bounds-checked against strlen, which truncates at the first NUL byte
+// inside binary data.
+extern fn Skink_mem_byte(ptr: string, idx: int64) -> int
+extern fn Skink_mem_write_byte(ptr: string, idx: int64, val: int)
+
 fn le16(b: string, off: int) -> int {
-    return (int(b[off]) & 255) | ((int(b[off + 1]) & 255) << 8)
+    return (Skink_mem_byte(b, int64(off)) & 255) | ((Skink_mem_byte(b, int64(off + 1)) & 255) << 8)
 }
 
 fn le32(b: string, off: int) -> int {
-    return (int(b[off]) & 255) | ((int(b[off + 1]) & 255) << 8) |
-        ((int(b[off + 2]) & 255) << 16) | ((int(b[off + 3]) & 255) << 24)
+    return (Skink_mem_byte(b, int64(off)) & 255) | ((Skink_mem_byte(b, int64(off + 1)) & 255) << 8) |
+        ((Skink_mem_byte(b, int64(off + 2)) & 255) << 16) | ((Skink_mem_byte(b, int64(off + 3)) & 255) << 24)
 }
 
 // Decode parses a BMP into an RGB Image.
@@ -24,7 +30,7 @@ pub fn Decode(data: string, byteLen: int) -> (cv_img.Image, errors.Error) {
     if byteLen < 54 {
         return empty, errors.New("bmp: too short")
     }
-    if (int(data[0]) & 255) != 66 || (int(data[1]) & 255) != 77 {
+    if (Skink_mem_byte(data, int64(0)) & 255) != 66 || (Skink_mem_byte(data, int64(1)) & 255) != 77 {
         return empty, errors.New("bmp: not BM")
     }
     pixOff := le32(data, 10)
@@ -66,9 +72,9 @@ pub fn Decode(data: string, byteLen: int) -> (cv_img.Image, errors.Error) {
         for x := 0; x < w; x = x + 1 {
             p := row + x * bytesPer
             // BMP stores BGR(A)
-            im.Pix[(y * w + x) * 3] = float(int(data[p + 2]) & 255)
-            im.Pix[(y * w + x) * 3 + 1] = float(int(data[p + 1]) & 255)
-            im.Pix[(y * w + x) * 3 + 2] = float(int(data[p]) & 255)
+            im.Pix[(y * w + x) * 3] = float(Skink_mem_byte(data, int64(p + 2)) & 255)
+            im.Pix[(y * w + x) * 3 + 1] = float(Skink_mem_byte(data, int64(p + 1)) & 255)
+            im.Pix[(y * w + x) * 3 + 2] = float(Skink_mem_byte(data, int64(p)) & 255)
         }
     }
     return im, errors.New("")
@@ -83,8 +89,8 @@ pub fn Encode(im: *cv_img.Image) -> (string, int) {
     pixLen := rowSize * h
     total := 54 + pixLen
     out := libc.calloc(total, 1)
-    out[0] = 66   // B
-    out[1] = 77   // M
+    Skink_mem_write_byte(out, int64(0), 66)   // B
+    Skink_mem_write_byte(out, int64(1), 77)   // M
     wl32(out, 2, total)
     wl32(out, 10, 54)          // pixel data offset
     wl32(out, 14, 40)          // DIB header size
@@ -100,13 +106,13 @@ pub fn Encode(im: *cv_img.Image) -> (string, int) {
             p := row + x * 3
             if im.Channels == 1 {
                 v := cv_img.Get(im, x, y, 0)
-                out[p] = int(v)
-                out[p + 1] = int(v)
-                out[p + 2] = int(v)
+                Skink_mem_write_byte(out, int64(p), int(v))
+                Skink_mem_write_byte(out, int64(p + 1), int(v))
+                Skink_mem_write_byte(out, int64(p + 2), int(v))
             } else {
-                out[p] = int(cv_img.Get(im, x, y, 2))      // B
-                out[p + 1] = int(cv_img.Get(im, x, y, 1))  // G
-                out[p + 2] = int(cv_img.Get(im, x, y, 0))  // R
+                Skink_mem_write_byte(out, int64(p), int(cv_img.Get(im, x, y, 2)))      // B
+                Skink_mem_write_byte(out, int64(p + 1), int(cv_img.Get(im, x, y, 1)))  // G
+                Skink_mem_write_byte(out, int64(p + 2), int(cv_img.Get(im, x, y, 0)))  // R
             }
         }
     }
@@ -114,13 +120,13 @@ pub fn Encode(im: *cv_img.Image) -> (string, int) {
 }
 
 fn wl16(b: string, off: int, v: int) {
-    b[off] = v & 255
-    b[off + 1] = (v >> 8) & 255
+    Skink_mem_write_byte(b, int64(off), v & 255)
+    Skink_mem_write_byte(b, int64(off + 1), (v >> 8) & 255)
 }
 
 fn wl32(b: string, off: int, v: int) {
-    b[off] = v & 255
-    b[off + 1] = (v >> 8) & 255
-    b[off + 2] = (v >> 16) & 255
-    b[off + 3] = (v >> 24) & 255
+    Skink_mem_write_byte(b, int64(off), v & 255)
+    Skink_mem_write_byte(b, int64(off + 1), (v >> 8) & 255)
+    Skink_mem_write_byte(b, int64(off + 2), (v >> 16) & 255)
+    Skink_mem_write_byte(b, int64(off + 3), (v >> 24) & 255)
 }

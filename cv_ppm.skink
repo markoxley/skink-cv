@@ -9,15 +9,19 @@ import "std/errors"
 import "std/libc"
 import "cv_img"
 
+// Raw byte accessor for the binary P6/P5 raster — string indexing is
+// bounds-checked against strlen, which truncates at the first NUL byte.
+extern fn Skink_mem_byte(ptr: string, idx: int64) -> int
+
 // token reads the next whitespace/comment-separated token; returns the
 // token and the offset just past it.
 fn token(data: string, n: int, pos: int) -> (string, int) {
     i := pos
     // skip whitespace + comments
     for i < n {
-        c := int(data[i]) & 255
+        c := Skink_mem_byte(data, int64(i)) & 255
         if c == 35 {   // '#' comment to EOL
-            for i < n && data[i] != 10 {
+            for i < n && Skink_mem_byte(data, int64(i)) != 10 {
                 i = i + 1
             }
         } else if c == 32 || c == 9 || c == 10 || c == 13 {
@@ -28,7 +32,7 @@ fn token(data: string, n: int, pos: int) -> (string, int) {
     }
     start := i
     for i < n {
-        c := int(data[i]) & 255
+        c := Skink_mem_byte(data, int64(i)) & 255
         if c == 32 || c == 9 || c == 10 || c == 13 || c == 35 {
             break
         }
@@ -52,10 +56,10 @@ fn atoi(s: string) -> int {
 // Decode parses a P6/P5/P3/P2 Netpbm image.
 pub fn Decode(data: string, byteLen: int) -> (cv_img.Image, errors.Error) {
     var empty cv_img.Image
-    if byteLen < 2 || (int(data[0]) & 255) != 80 {
+    if byteLen < 2 || (Skink_mem_byte(data, int64(0)) & 255) != 80 {
         return empty, errors.New("ppm: bad magic")
     }
-    kind := int(data[1]) - 48
+    kind := Skink_mem_byte(data, int64(1)) - 48
     if kind != 2 && kind != 3 && kind != 5 && kind != 6 {
         return empty, errors.New("ppm: unsupported variant (need P2/P3/P5/P6)")
     }

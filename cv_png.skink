@@ -13,6 +13,12 @@ import "std/libc"
 import "std/compress"
 import "cv_img"
 
+// Raw byte accessors for malloc'd PNG buffers — string indexing is
+// bounds-checked against strlen, which truncates at the first NUL byte
+// inside binary data.
+extern fn Skink_mem_byte(ptr: string, idx: int64) -> int
+extern fn Skink_mem_write_byte(ptr: string, idx: int64, val: int)
+
 var crcTable []int64
 var crcReady = false
 
@@ -47,15 +53,15 @@ fn crc32(buf: string, off: int, n: int) -> int {
     mask := int64(65536) * 65536 - 1
     c := mask
     for i := 0; i < n; i = i + 1 {
-        c = (crcTable[int64((c ^ int64(int(buf[off + i]) & 255)) & 255)] ^ (c >> 8)) & mask
+        c = (crcTable[int64((c ^ int64(Skink_mem_byte(buf, int64(off + i)) & 255)) & 255)] ^ (c >> 8)) & mask
     }
     return int(c ^ mask)
 }
 
 // u32be/u16be read big-endian ints.
 fn u32be(b: string, off: int) -> int {
-    return ((int(b[off]) & 255) << 24) | ((int(b[off + 1]) & 255) << 16) |
-        ((int(b[off + 2]) & 255) << 8) | (int(b[off + 3]) & 255)
+    return ((Skink_mem_byte(b, int64(off)) & 255) << 24) | ((Skink_mem_byte(b, int64(off + 1)) & 255) << 16) |
+        ((Skink_mem_byte(b, int64(off + 2)) & 255) << 8) | (Skink_mem_byte(b, int64(off + 3)) & 255)
 }
 
 // channelsOf maps PNG color type to samples per pixel.
@@ -86,8 +92,8 @@ pub fn Decode(data: string, byteLen: int) -> (cv_img.Image, errors.Error) {
         return empty, errors.New("png: too short")
     }
     // signature check
-    if (int(data[0]) & 255) != 137 || (int(data[1]) & 255) != 80 ||
-        (int(data[2]) & 255) != 78 || (int(data[3]) & 255) != 71 {
+    if (Skink_mem_byte(data, int64(0)) & 255) != 137 || (Skink_mem_byte(data, int64(1)) & 255) != 80 ||
+        (Skink_mem_byte(data, int64(2)) & 255) != 78 || (Skink_mem_byte(data, int64(3)) & 255) != 71 {
         return empty, errors.New("png: bad signature")
     }
     pos := 8
@@ -103,10 +109,10 @@ pub fn Decode(data: string, byteLen: int) -> (cv_img.Image, errors.Error) {
     seenIHDR := false
     for pos + 12 <= byteLen {
         clen := u32be(data, pos)
-        ct0 := int(data[pos + 4]) & 255
-        ct1 := int(data[pos + 5]) & 255
-        ct2 := int(data[pos + 6]) & 255
-        ct3 := int(data[pos + 7]) & 255
+        ct0 := Skink_mem_byte(data, int64(pos + 4)) & 255
+        ct1 := Skink_mem_byte(data, int64(pos + 5)) & 255
+        ct2 := Skink_mem_byte(data, int64(pos + 6)) & 255
+        ct3 := Skink_mem_byte(data, int64(pos + 7)) & 255
         if pos + 12 + clen > byteLen {
             break
         }
@@ -114,9 +120,9 @@ pub fn Decode(data: string, byteLen: int) -> (cv_img.Image, errors.Error) {
         if ct0 == 73 && ct1 == 72 && ct2 == 68 && ct3 == 82 {      // IHDR
             w = u32be(data, body)
             h = u32be(data, body + 4)
-            bitDepth = int(data[body + 8]) & 255
-            colorType = int(data[body + 9]) & 255
-            interlace = int(data[body + 12]) & 255
+            bitDepth = Skink_mem_byte(data, int64(body + 8)) & 255
+            colorType = Skink_mem_byte(data, int64(body + 9)) & 255
+            interlace = Skink_mem_byte(data, int64(body + 12)) & 255
             seenIHDR = true
         } else if ct0 == 73 && ct1 == 68 && ct2 == 65 && ct3 == 84 { // IDAT
             nb := libc.malloc(idatLen + clen)
@@ -165,21 +171,21 @@ pub fn Decode(data: string, byteLen: int) -> (cv_img.Image, errors.Error) {
     prev := 0     // offset of previous scanline's data in `out`
     src := 0      // cursor into raw
     for y := 0; y < h; y = y + 1 {
-        ft := int(raw[src]) & 255
+        ft := Skink_mem_byte(raw, int64(src)) & 255
         src = src + 1
         rowOff := y * stride
         for x := 0; x < stride; x = x + 1 {
-            a := int(raw[src + x]) & 255
+            a := Skink_mem_byte(raw, int64(src + x)) & 255
             left := 0
             up := 0
             upleft := 0
             if x >= bpp {
-                left = int(out[rowOff + x - bpp]) & 255
+                left = Skink_mem_byte(out, int64(rowOff + x - bpp)) & 255
             }
             if y > 0 {
-                up = int(out[prev + x]) & 255
+                up = Skink_mem_byte(out, int64(prev + x)) & 255
                 if x >= bpp {
-                    upleft = int(out[prev + x - bpp]) & 255
+                    upleft = Skink_mem_byte(out, int64(prev + x - bpp)) & 255
                 }
             }
             v := a
@@ -196,7 +202,7 @@ pub fn Decode(data: string, byteLen: int) -> (cv_img.Image, errors.Error) {
                 libc.free(out)
                 return empty, errors.New("png: bad filter type")
             }
-            out[rowOff + x] = v & 255
+            Skink_mem_write_byte(out, int64(rowOff + x), v & 255)
         }
         src = src + stride
         prev = rowOff
@@ -213,7 +219,7 @@ pub fn Decode(data: string, byteLen: int) -> (cv_img.Image, errors.Error) {
         // palette indices → RGB via PLTE
         im = cv_img.New(w, h, 3)
         for i := 0; i < w * h; i = i + 1 {
-            idx := (int(out[i]) & 255) * 3
+            idx := (Skink_mem_byte(out, int64(i)) & 255) * 3
             if idx + 2 < plteLen {
                 im.Pix[i * 3] = float(int(plte[idx]) & 255)
                 im.Pix[i * 3 + 1] = float(int(plte[idx + 1]) & 255)
@@ -224,15 +230,15 @@ pub fn Decode(data: string, byteLen: int) -> (cv_img.Image, errors.Error) {
         // gray+alpha → gray
         im = cv_img.New(w, h, 1)
         for i := 0; i < w * h; i = i + 1 {
-            im.Pix[i] = float(int(out[i * 2]) & 255)
+            im.Pix[i] = float(Skink_mem_byte(out, int64(i * 2)) & 255)
         }
     } else {
         // RGBA → RGB
         im = cv_img.New(w, h, 3)
         for i := 0; i < w * h; i = i + 1 {
-            im.Pix[i * 3] = float(int(out[i * 4]) & 255)
-            im.Pix[i * 3 + 1] = float(int(out[i * 4 + 1]) & 255)
-            im.Pix[i * 3 + 2] = float(int(out[i * 4 + 2]) & 255)
+            im.Pix[i * 3] = float(Skink_mem_byte(out, int64(i * 4)) & 255)
+            im.Pix[i * 3 + 1] = float(Skink_mem_byte(out, int64(i * 4 + 1)) & 255)
+            im.Pix[i * 3 + 2] = float(Skink_mem_byte(out, int64(i * 4 + 2)) & 255)
         }
     }
     libc.free(out)
@@ -281,7 +287,7 @@ pub fn Encode(im: *cv_img.Image) -> (string, int) {
     bytes, _ := cv_img.ToBytes(im)
     src := 0
     for y := 0; y < im.H; y = y + 1 {
-        raw[y * (1 + stride)] = 0   // filter: none
+        Skink_mem_write_byte(raw, int64(y * (1 + stride)), 0)   // filter: none
         libc.memcpy(string(int64(raw) + int64(y * (1 + stride) + 1)),
             string(int64(bytes) + int64(y * stride)), stride)
         src = src + stride
@@ -298,25 +304,25 @@ pub fn Encode(im: *cv_img.Image) -> (string, int) {
     total := 8 + 25 + 12 + compLen + 12
     out := libc.malloc(total)
     // signature: 89 50 4E 47 0D 0A 1A 0A
-    out[0] = 137
-    out[1] = 80
-    out[2] = 78
-    out[3] = 71
-    out[4] = 13
-    out[5] = 10
-    out[6] = 26
-    out[7] = 10
+    Skink_mem_write_byte(out, int64(0), 137)
+    Skink_mem_write_byte(out, int64(1), 80)
+    Skink_mem_write_byte(out, int64(2), 78)
+    Skink_mem_write_byte(out, int64(3), 71)
+    Skink_mem_write_byte(out, int64(4), 13)
+    Skink_mem_write_byte(out, int64(5), 10)
+    Skink_mem_write_byte(out, int64(6), 26)
+    Skink_mem_write_byte(out, int64(7), 10)
 
     // IHDR
     put32(out, 8, 13)
     libc.memcpy(string(int64(out) + 12), "IHDR", 4)
     put32(out, 16, im.W)
     put32(out, 20, im.H)
-    out[24] = 8      // bit depth
-    out[25] = ct     // color type
-    out[26] = 0      // compression
-    out[27] = 0      // filter
-    out[28] = 0      // interlace
+    Skink_mem_write_byte(out, int64(24), 8)      // bit depth
+    Skink_mem_write_byte(out, int64(25), ct)     // color type
+    Skink_mem_write_byte(out, int64(26), 0)      // compression
+    Skink_mem_write_byte(out, int64(27), 0)      // filter
+    Skink_mem_write_byte(out, int64(28), 0)      // interlace
     put32(out, 29, crc32(out, 12, 17))
 
     // IDAT
@@ -337,8 +343,8 @@ pub fn Encode(im: *cv_img.Image) -> (string, int) {
 
 // put32 writes a big-endian u32.
 fn put32(b: string, off: int, v: int) {
-    b[off] = (v >> 24) & 255
-    b[off + 1] = (v >> 16) & 255
-    b[off + 2] = (v >> 8) & 255
-    b[off + 3] = v & 255
+    Skink_mem_write_byte(b, int64(off), (v >> 24) & 255)
+    Skink_mem_write_byte(b, int64(off + 1), (v >> 16) & 255)
+    Skink_mem_write_byte(b, int64(off + 2), (v >> 8) & 255)
+    Skink_mem_write_byte(b, int64(off + 3), v & 255)
 }

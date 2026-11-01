@@ -14,6 +14,10 @@ import "cv_png"
 import "cv_bmp"
 import "cv_ppm"
 
+// Raw byte accessor for the loaded file image — string indexing is
+// bounds-checked against strlen, which truncates at the first NUL byte.
+extern fn Skink_mem_byte(ptr: string, idx: int64) -> int
+
 // Load reads and decodes an image file (PNG, BMP, PPM/PGM).
 pub fn Load(path: string) -> (cv_img.Image, errors.Error) {
     var empty cv_img.Image
@@ -41,8 +45,8 @@ pub fn Load(path: string) -> (cv_img.Image, errors.Error) {
     }
     var im cv_img.Image
     var err errors.Error
-    m0 := int(data[0]) & 255
-    m1 := int(data[1]) & 255
+    m0 := Skink_mem_byte(data, int64(0)) & 255
+    m1 := Skink_mem_byte(data, int64(1)) & 255
     if m0 == 137 && m1 == 80 {
         im, err = cv_png.Decode(data, got)
     } else if m0 == 66 && m1 == 77 {

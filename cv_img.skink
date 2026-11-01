@@ -8,6 +8,12 @@ module cv_img
 
 import "std/libc"
 
+// Raw byte accessors for malloc'd u8 buffers — string indexing is
+// bounds-checked against strlen, which cannot address positions inside
+// binary pixel data (it contains NUL bytes).
+extern fn Skink_mem_byte(ptr: string, idx: int64) -> int
+extern fn Skink_mem_write_byte(ptr: string, idx: int64, val: int)
+
 // Image is a width*height*channels float buffer, row-major.
 pub struct Image {
     W:        int
@@ -33,7 +39,7 @@ pub fn FromBytes(w: int, h: int, channels: int, data: string, dataLen: int) -> I
         n = dataLen
     }
     for i := 0; i < n; i = i + 1 {
-        p = append(p, float(int(data[i]) & 255))
+        p = append(p, float(Skink_mem_byte(data, int64(i)) & 255))
     }
     for i := n; i < w * h * channels; i = i + 1 {
         p = append(p, 0.0)
@@ -88,7 +94,7 @@ pub fn ToBytes(im: *Image) -> (string, int) {
         if v > 255.0 {
             v = 255.0
         }
-        out[i] = int(v + 0.5)
+        Skink_mem_write_byte(out, int64(i), int(v + 0.5))
     }
     return out, n
 }

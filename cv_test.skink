@@ -19,6 +19,12 @@ import "std/libc"
 import "std/fs"
 import "std/testing"
 
+// Raw byte accessor for malloc'd codec buffers — string indexing is
+// bounds-checked against strlen, which truncates at the first NUL byte
+// inside binary data.
+extern fn Skink_mem_byte(ptr: string, idx: int64) -> int
+extern fn Skink_mem_write_byte(ptr: string, idx: int64, val: int)
+
 // gradient builds a test RGB image: horizontal gradient + a bright
 // square in the middle.
 fn gradient(w: int, h: int) -> cv_img.Image {
@@ -52,7 +58,7 @@ pub fn TestImageModel() {
     testing.AssertTrue(math.Abs(cv_img.Get(&im, 2, 1, 0) - 200.0) < 0.01, "clone deep")
     bytes, n := cv_img.ToBytes(&im)
     testing.AssertEqualInt(n, 36, "byte len")
-    testing.AssertEqualInt(int(bytes[(1 * 4 + 2) * 3]) & 255, 200, "byte value")
+    testing.AssertEqualInt(Skink_mem_byte(bytes, int64((1 * 4 + 2) * 3)) & 255, 200, "byte value")
     libc.free(bytes)
 }
 
@@ -248,4 +254,101 @@ pub fn TestRootWrappers() {
     testing.AssertEqualInt(e.Channels, 1, "edges")
     bl := cv.Blur(&im, 1.0)
     testing.AssertEqualInt(bl.W, 8, "blur")
+}
+
+// TestConvolve verifies an arbitrary kernel applied via Convolve: a
+// 1x1 identity kernel reproduces the image and a 3x3 box kernel
+// averages neighbourhood pixels.
+pub fn TestConvolve() {
+    im := gradient(8, 8)
+    var ident []float
+    ident = append(ident, 1.0)
+    same := cv_filter.Convolve(&im, ident, 1)
+    testing.AssertTrue(math.Abs(cv_img.Get(&same, 4, 4, 0) - cv_img.Get(&im, 4, 4, 0)) < 0.01, "identity kernel")
+    var box []float
+    for i := 0; i < 9; i = i + 1 {
+        box = append(box, 1.0 / 9.0)
+    }
+    blurred := cv_filter.Convolve(&im, box, 3)
+    testing.AssertEqualInt(blurred.W, 8, "conv w")
+    testing.AssertEqualInt(blurred.H, 8, "conv h")
+}
+
+// TestGaussianKernel verifies the generated kernel is odd-sized,
+// symmetric, and sums to ~1.
+pub fn TestGaussianKernel() {
+    k, n := cv_filter.GaussianKernel(1.0)
+    testing.AssertTrue(n % 2 == 1, "odd kernel size")
+    testing.AssertEqualInt(len(k), n * n, "kernel elements")
+    sum := 0.0
+    for i := 0; i < len(k); i = i + 1 {
+        sum = sum + k[i]
+    }
+    testing.AssertTrue(math.Abs(sum - 1.0) < 0.01, "kernel sums to 1")
+    testing.AssertTrue(math.Abs(k[0] - k[n * n - 1]) < 0.0001, "kernel symmetric")
+}
+
+// TestFromBytes verifies u8 byte data maps to float pixels 1:1.
+pub fn TestFromBytes() {
+    raw := libc.malloc(6)
+    Skink_mem_write_byte(raw, 0, 10)
+    Skink_mem_write_byte(raw, 1, 20)
+    Skink_mem_write_byte(raw, 2, 30)
+    Skink_mem_write_byte(raw, 3, 40)
+    Skink_mem_write_byte(raw, 4, 50)
+    Skink_mem_write_byte(raw, 5, 60)
+    im := cv_img.FromBytes(2, 1, 3, raw, 6)
+    testing.AssertEqualInt(im.W, 2, "w")
+    testing.AssertEqualInt(im.Channels, 3, "channels")
+    testing.AssertTrue(math.Abs(cv_img.Get(&im, 0, 0, 0) - 10.0) < 0.01, "px0")
+    testing.AssertTrue(math.Abs(cv_img.Get(&im, 1, 0, 2) - 60.0) < 0.01, "px1")
+    // short data zero-pads the remainder
+    im2 := cv_img.FromBytes(2, 1, 3, raw, 3)
+    testing.AssertTrue(math.Abs(cv_img.Get(&im2, 1, 0, 0)) < 0.01, "short data pads")
+    libc.free(raw)
+}
+
+// TestFlipV verifies vertical mirroring swaps rows.
+pub fn TestFlipV() {
+    im := gradient(4, 4)
+    f := cv_ops.FlipV(&im)
+    testing.AssertEqualInt(f.W, 4, "w")
+    testing.AssertTrue(math.Abs(cv_img.Get(&f, 0, 0, 0) - cv_img.Get(&im, 0, 3, 0)) < 0.01, "top <- bottom")
+    testing.AssertTrue(math.Abs(cv_img.Get(&f, 0, 3, 0) - cv_img.Get(&im, 0, 0, 0)) < 0.01, "bottom <- top")
+}
+
+// TestRotate270 verifies a 90° CCW rotation swaps dimensions and maps
+// the top-left source pixel to the bottom-left destination.
+pub fn TestRotate270() {
+    im := cv_img.New(4, 2, 1)
+    cv_img.Set(&im, 0, 0, 0, 255.0)
+    r := cv_ops.Rotate270(&im)
+    testing.AssertEqualInt(r.W, 2, "rotated w")
+    testing.AssertEqualInt(r.H, 4, "rotated h")
+    testing.AssertTrue(math.Abs(cv_img.Get(&r, 0, 3, 0) - 255.0) < 0.01, "src (0,0) -> dst (0,3)")
+}
+
+// TestSaveFormats exercises SaveBMP/SavePPM and the extension-dispatch
+// Save/Load pair for both formats.
+pub fn TestSaveFormats() {
+    im := gradient(10, 6)
+    bmp := "/tmp/skink-cv-fmt.bmp"
+    e1 := cv_io.SaveBMP(bmp, &im)
+    testing.AssertEqualString("", e1.message, "SaveBMP")
+    d1, r1 := cv_io.Load(bmp)
+    testing.AssertEqualString("", r1.message, "load bmp")
+    testing.AssertEqualInt(d1.W, 10, "bmp w")
+    fs.Remove(bmp)
+
+    ppm := "/tmp/skink-cv-fmt.ppm"
+    e2 := cv_io.SavePPM(ppm, &im)
+    testing.AssertEqualString("", e2.message, "SavePPM")
+    d2, r2 := cv_io.Load(ppm)
+    testing.AssertEqualString("", r2.message, "load ppm")
+    testing.AssertEqualInt(d2.H, 6, "ppm h")
+    fs.Remove(ppm)
+
+    // unknown extension must error, not silently pick a codec
+    e3 := cv_io.Save("/tmp/skink-cv-fmt.xyz", &im)
+    testing.AssertTrue(str.Len(e3.message) > 0, "unknown ext errors")
 }
