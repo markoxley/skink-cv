@@ -20,5 +20,5 @@ arch = "any"
 [link]
 sources = ["shim.cpp"]
 libs = ["opencv_core", "opencv_imgproc", "opencv_imgcodecs", "opencv_objdetect", "opencv_videoio"]
-cflags = ["-std=c++17", "-I/usr/include/opencv4"]
+cflags = ["-I/usr/include/opencv4"]
 ldflags = ["-lstdc++"]

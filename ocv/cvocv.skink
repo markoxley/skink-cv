@@ -10,14 +10,14 @@ module cvocv
 
 import "std/errors"
 import "std/libc"
-import "../cv_img"
-import "../cv_ops"
+import "mod/markoxley/skink-cv/cv_img"
+import "mod/markoxley/skink-cv/cv_ops"
 
 extern fn skinkcv_read(path: string, w: *int, h: *int, ch: *int) -> string
 extern fn skinkcv_free(p: string)
 extern fn skinkcv_write(path: string, px: string, w: int, h: int, ch: int) -> int
 extern fn skinkcv_blur(px: string, w: int, h: int, ch: int, sigma: float) -> int
-extern fn skinkcv_canny(in: string, out: string, w: int, h: int, t1: float, t2: float) -> int
+extern fn skinkcv_canny(src: string, out: string, w: int, h: int, t1: float, t2: float) -> int
 extern fn skinkcv_detect_faces(cascadePath: string, gray: string, w: int, h: int, rects: string, maxRects: int) -> int
 
 // Load decodes an image file via cv::imread (any OpenCV-supported
